@@ -1,0 +1,230 @@
+---
+title: "Klasyfikacja banknotów przy pomocy algorytmów opartych na drzewach decyzyjnych"
+output: html_document
+---
+
+## Wprowadzenie
+
+Celem tego projektu jest porównanie działania algorytmów klasyfikacyjnych opartych na drzewach decyzyjnych, w tym celu wykorzystany zostanie zbiór danych zawierący informacje dotyczący prawdziwości banknotów. W czasie projektu zostanie zaprezentowany proces analizy zaczynający się od eksploracji oraz przygotowania danych, poprzez zbudowanie poprawnych i skutecznych modeli i kończący się jasnym  zaprezentowaniem wyników. 
+<br/> Projekt składa się z czterech części:
+<ul>
+<li>Wprowadzenie</li>
+<li>Analiza wizualna oraz opisowa</li>
+<li>Budowa modeli</li>
+<li>Podsumowanie</li>
+</ul>
+
+## Analiza wizualna oraz opisowa
+
+#### Opis danych
+
+Dane pochodzą ze strony Machine Learning Repository:<br/>
+https://archive.ics.uci.edu/ml/datasets/banknote+authentication <br/>
+
+Na stronie znajduje się następujący opis:<br/>:
+Dane uzyskano z obrazów pobranych z autentycznych i sfałszowanych próbek banknotów. Do digitalizacji wykorzystano kamerę przemysłową używaną zazwyczaj do kontroli druku. Ostateczne obrazy mają rozdzielczość 400x 400 pikseli. Dzięki obiektywowi obiektu oraz odległości od badanego obiektu uzyskano zdjęcia w skali szarości o rozdzielczości około 660 dpi. NTransformacja falkowa została użyta do wyodrębnienia cech z obrazów.<br/>
+
+Informacje odnośnie atrybutów:<br/>
+<ul>
+<li>wariancja obrazu </li>
+<li>przekrzywienie obrazu</li>
+<li>kurtoza obrazu</li>
+<li>entropia obrazu</li>
+<li>klasa obrazu</li>
+</ul>
+
+```{r Wczytanie pakietów oraz danych, message = F, warning = F, echo = F}
+rm(list=ls())
+# Pobieranie i ładowanie pakietów
+list.of.packages <- c("magrittr", "dplyr","caret","rpart","rpart.plot",
+                      "Metrics","ROCR","ggplot2","ipred","randomForest",
+                      "xgboost","mltools","Ckmeans.1d.dp","purrr","ellipse")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+library(ellipse)
+library(magrittr)
+library(xgboost)
+# Ładowanie zbioru danych o banknotach link https://archive.ics.uci.edu/ml/datasets/banknote+authentication
+data <- data.frame(data.table::fread("https://archive.ics.uci.edu/ml/machine-learning-databases/00267/data_banknote_authentication.txt"))
+# Nadawanie poprawnych nazw kolumnom 
+names(data) <- c("variance", "skewness", "curtosis", "entropy", "class")
+```
+#### Eksploracja danych 
+```{r Eksploracja danych}
+# Liczba obserwacji
+nrow(data)
+
+# 10 pierwszych obserwacji
+head(data, 10)
+
+# Podstawowe statystyki opisowe
+summary(dplyr::select(data, -class))
+
+# Rozkład obserwacji wzg. klas
+table(data$class)
+
+# zmiana zmiennej class z integer na character
+# data$class <- as.character(ifelse(data$class=="1", "Y", "N"))
+
+#rozkLad obserwacji wzg. klas po zmianie
+# table(data$class)
+```
+Jak widzimy, zbiór danych składa się z 1372 obserwacji, 762 obserwacje należą do klasy 0, która odpowiada za banknoty prawdziwe, natomiast pozostałe 610 reprezentuje fałszywki. 
+
+#### Przygotowanie danych
+
+```{r Preprocessing danych}
+# Sprawdzenie, czy któraś ze zmiennych jest zmienną quasi-stałą
+caret::nearZeroVar(dplyr::select(data, -class), saveMetrics= TRUE)
+
+# Identyfikacja silnie skorelowanych zmiennych 
+PerformanceAnalytics::chart.Correlation(dplyr::select(data, -class), histogram=TRUE)
+
+
+# Usuwanie silnie skorelowanych zmiennych
+data2 <- dplyr::select(data, -class)
+cor_matrix <- cor(data2)
+high_cor_var <- caret::findCorrelation(cor_matrix, cutoff = .75)
+filter_data_cor <- data2[, -high_cor_var]
+
+# Ponowne wyświetlenie korelacji pomiędzy zmiennymi
+PerformanceAnalytics::chart.Correlation(filter_data_cor, histogram=TRUE)
+
+# Wyczyszczony zbiór danych
+data <- cbind.data.frame(filter_data_cor, class = data$class) 
+head(data, 10)
+
+```
+
+#### Wizualizacja danych
+
+```{r Kod odpowiedzialny za przygotowanie wykresów, message = F, warning = F, echo = F}
+class_freq <- data.frame(table(data$class))
+names(class_freq) <- c("class", "freq")
+percent_chart <- cbind(class_freq, percent=round((class_freq$freq/sum(class_freq$freq))*100, 2))
+
+labels_chart <- paste(percent_chart$class, "\n",
+                      paste(percent_chart$freq, " (",
+                            percent_chart$percent, "%)", sep=""), sep="")
+
+percent_table <- percent_chart
+
+```
+
+```{r Wizualizacja danych}
+# Procentowy rozkład klas w zbiorze
+print(percent_table)
+
+# Wykres kołowy z rozkładem klas
+pie(percent_chart$percent,
+    labels=labels_chart,
+    col=rainbow(length(percent_chart$class)),
+    main="Pie Chart of Classes")
+
+# Rozkład zmiennych wzgledem klasy
+caret::featurePlot(x=dplyr::select(data, -class), y=data$class %>% as.factor(), plot="box")
+
+# Klasy wzgledem zmiennych objasniajacych
+caret::featurePlot(x=dplyr::select(data, -class), y=data$class %>% as.factor(), plot="ellipse", auto.key = list(columns = 2))
+```
+<br/>
+Wykres kołowy, pokazuje że mamy do czynienia ze zrównoważonym zbiorem danych. Wykresy pudełkowe względem klas pokazują, że zmienne, które mogą mieć największy wpływ na przynależność do danej klasy to wariancja oraz kurtoza. To samo potwierdza ostatni wykres, pokazujący interakcję między zmiennymi. 
+
+## Budowa modeli
+
+W projekcie zostaną wykorzystane trzy metody klasyfikacji:<br/>
+<ul>
+<li>Drzewo decyzyjne </li>
+<li>Random forest</li>
+<li>XGBoost</li>
+</ul>
+
+Każda z tych modeli zostanie przetestowany na zbiorze testowym,i za pomocą metryk takich jak accuracy oraz AUC zostanie wskazany najlepszy model. 
+```{r , message = F, warning = F, echo = F}
+# # Podział na zbiór testowy i uczący
+sample_rows <- sample(nrow(data), nrow(data) * 0.7)
+train_set <- data[sample_rows,]
+test_set <- data[-sample_rows,]
+
+train_set$class %<>% as.factor()
+test_set$class %<>% as.factor()
+```
+
+#### Drzewo decyzyjne
+```{r Drzewo decyzyjne}
+# Budowa modelu
+dec_tree <- rpart::rpart(formula = class ~ . ,
+                           data = train_set,
+                           method = "class")
+
+# Predykcje na zbiorze tstowym
+dec_tree_pred_test <- predict(object = dec_tree,
+                           newdata = test_set,
+                           type = "class")
+
+# Macierz pomyłek
+caret::confusionMatrix(data = dec_tree_pred_test,
+                       reference = test_set$class)
+
+
+# Żeby policzyć AUC, wyniki przynależności do klas muszą być podane jako prawdopodobieństwa
+dec_tree_pred_test_auc <- predict(object = dec_tree,
+                           newdata = test_set,
+                           type = "prob")
+# AUC
+Metrics::auc(test_set$class, dec_tree_pred_test_auc[,2])
+```
+#### Random Forest
+```{r Random Forest}
+# Model
+rand_forest <- randomForest::randomForest(formula = class ~ .,
+                                            data = train_set,
+                                            mtry = 2,
+                                            ntree = 250)
+
+# Predykcje na zbiorze testowym
+rand_forest_pred_test <- predict(object = rand_forest,  
+                            newdata = test_set[,-4],
+                            type = "class")
+
+# Macierz pomyłek
+caret::confusionMatrix(data = rand_forest_pred_test,
+                       reference = test_set$class %>% as.factor())
+
+# Żeby policzyć AUC, wyniki przynależności do klas muszą być podane jako prawdopodobieństwa
+rand_forest_pred_test_auc <- predict(object = rand_forest,
+                           newdata = test_set,
+                           type = "prob")
+# AUC
+Metrics::auc(test_set$class, rand_forest_pred_test_auc[,2])
+```
+#### XGBoost
+```{r XGboost}
+# Przekształcenie danych do odpowiedniego inputu dla xgboosta
+dm_treningowe <- xgb.DMatrix(data = data.matrix(train_set[,-4]), label = data.matrix(train_set[,4]))
+dm_testowe <- xgb.DMatrix(data = data.matrix(test_set[,-4]), label = data.matrix(test_set[,4]))
+
+# Model
+xgb_model <- xgboost(data = dm_treningowe,
+                     nround = 24,
+                     eta = 0.2,
+                     objectice = "binary:logistic",
+                     verbose = 0)
+
+# Predykcje
+xgb_test_pred <- predict(xgb_model, dm_testowe)
+
+# Macierz pomyłek
+caret::confusionMatrix(data =  ifelse(xgb_test_pred > 0.5, 1, 0) %>% as.factor() ,
+                       reference = test_set[,4])
+
+# Krzywa ROC i AUC
+Metrics::auc(actual = test_set[,4], predicted = xgb_test_pred)
+
+```
+
+## Podsumowanie
+
+Analizując poprzedni rozdział należy stwierdzić, że najgorzej z zadaniem klasyfikacji banknotów poradziło sobie drzewo decyzyjne, uzyskująć accuracy w granicach 95%. Kolejne dwa algorytmy, poradziły sobie zdecydowanie lepiej, uzyskując accuracy w granicach 98% oraz AUC większe niż 99%. Zarówno algorytm Random forest jak i XGBoost skupia się na ulepszeniu bolączek na jakie cierpią drzewa decyzyjne. Random forest redukuję wariancję, a XGBoost oprócz tego skupia się również na błędach popełnianych przez kolejne drzewa i próbuje je minimalizować. Jednak należy pamiętać, że ceną za używanie bardziej skomplikowanych modeli jest większa trudność w ich interpretowalności. Drzewa decyzyjne są bardzo łatwe do wytłumaczenia, natomiast aby zrozumieć wyniki Random foresta oraz XGBoosta, trzeba często sięgać po specjlanie opracowywane metody takie jak: LIME, Partial dependency plots, SHAP Values i wiele innych, które mogą nie być już tak bardzo intuicyjne i łatwe do wykorzystania. 
+
